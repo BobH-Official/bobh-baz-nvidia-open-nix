@@ -3,7 +3,7 @@ FROM scratch AS ctx
 COPY build_files /
 
 # Base Image
-FROM ghcr.io/ublue-os/bazzite:stable
+FROM ghcr.io/ublue-os/bazzite-nvidia-open:stable
 
 ## Other possible base images include:
 # FROM ghcr.io/ublue-os/bazzite:latest
@@ -24,6 +24,9 @@ FROM ghcr.io/ublue-os/bazzite:stable
 ## by the package manager.
 
 # RUN rm /opt && mkdir /opt
+
+### NIX
+RUN mkdir -p /nix && chown 30000:30000 /nix
 
 ### MODIFICATIONS
 ## make modifications desired in your image and install packages by modifying the build.sh script
