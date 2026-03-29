@@ -26,14 +26,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check_update:
+    name: Check for upstream updates
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.compare.outputs.should_build }}
+      upstream_version: ${{ steps.compare.outputs.upstream_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Compare upstream tag with ours (via PowerShell)
+        id: compare
+        shell: pwsh
+        env:
+          MY_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+        run: |
+          # 强制转换为全小写，兼容 GHCR 命名规范
+          $myImageLower = $env:MY_IMAGE_NAME.ToLower()
+          
+          # 执行我们的 ps1 脚本，并注入参数
+          .github/scripts/Check-UpstreamUpdate.ps1 `
+            -UpstreamImage "ghcr.io/ublue-os/bazzite:latest" `
+            -MyImage $myImageLower `
+            -GithubActor "${{ github.actor }}" `
+            -GithubToken "${{ secrets.GITHUB_TOKEN }}"
+
+
   build_push:
     name: Build and push image
     runs-on: ubuntu-24.04
+
+    needs: check_update
+    if: ${{ needs.check_update.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}
 
     permissions:
       contents: read
       packages: write
       id-token: write
+
+    env:
+      UPSTREAM_VERSION: ${{ needs.check_update.outputs.upstream_version }}
 
     steps:
       - name: Prepare environment
@@ -64,6 +97,8 @@ jobs:
       - name: Image Metadata
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         id: metadata
+        env:
+          UPSTREAM_VERSION: ${{ needs.check_update.outputs.upstream_version }}
         with:
           # This generates all the tags for your image, you can add custom tags here too!
           # Default tags are "$DEFAULT_TAG" and "$DEFAULT_TAG.$date".
@@ -71,6 +106,7 @@ jobs:
             type=raw,value=${{ env.DEFAULT_TAG }}
             type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
             type=raw,value={{date 'YYYYMMDD'}}
+            type=raw,value=upstream.${{ env.UPSTREAM_VERSION }}
             type=sha,enable=${{ github.event_name == 'pull_request' }}
             type=ref,event=pr
           labels: |
@@ -109,25 +145,25 @@ jobs:
       # This does not make your image faster to download, just provides better resumability and fixes a few errors.
       # Documentation for Rechunk is provided on their github repository at https://github.com/hhd-dev/rechunk
       # You can enable it by uncommenting the following lines:
-      # - name: Run Rechunker
-      #   id: rechunk
-      #   uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
-      #   with:
-      #     rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
-      #     ref: "localhost/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     skip_compression: true
-      #     version: ${{ env.CENTOS_VERSION }}
-      #     labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
+      - name: Run Rechunker
+        id: rechunk
+        uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
+        with:
+          rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
+          ref: "localhost/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
+          prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
+          skip_compression: true
+          version: ${{ env.CENTOS_VERSION }}
+          labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
 
       # This is necessary so that the podman socket can find the rechunked image on its storage
-      # - name: Load in podman and tag
-      #   run: |
-      #     IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
-      #     sudo rm -rf ${{ steps.rechunk.outputs.output }}
-      #     for tag in ${{ steps.metadata.outputs.tags }}; do
-      #       podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
-      #     done
+      - name: Load in podman and tag
+        run: |
+          IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
+          sudo rm -rf ${{ steps.rechunk.outputs.output }}
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
+          done
 
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
