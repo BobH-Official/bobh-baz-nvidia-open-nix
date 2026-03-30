@@ -74,3 +74,6 @@ if ($env:GITHUB_OUTPUT) {
 else {
     Write-Host "=> (本地测试环境) 输出变量: should_build=$shouldBuild, upstream_version=$upstreamVersion"
 }
+
+exit 0
+
