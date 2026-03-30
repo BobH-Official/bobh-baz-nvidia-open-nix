@@ -106,7 +106,7 @@ jobs:
             type=raw,value=${{ env.DEFAULT_TAG }}
             type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
             type=raw,value={{date 'YYYYMMDD'}}
-            type=raw,value=upstream.${{ env.UPSTREAM_VERSION }}
+            type=raw,value=upstream.${{ env.UPSTREAM_VERSION }},enable=${{ env.UPSTREAM_VERSION != '' }}
             type=sha,enable=${{ github.event_name == 'pull_request' }}
             type=ref,event=pr
           labels: |
