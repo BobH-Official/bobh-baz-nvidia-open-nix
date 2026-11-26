@@ -86,7 +86,7 @@ sudoif command *args:
 #
 
 # Build the image using the specified parameters
-build $target_image=image_name $tag=default_tag:
+build $target_image=image_name $tag=default_tag containerfile="Containerfile":
     #!/usr/bin/env bash
 
     BUILD_ARGS=()
@@ -95,10 +95,16 @@ build $target_image=image_name $tag=default_tag:
     fi
 
     podman build \
+        -f "${containerfile}" \
         "${BUILD_ARGS[@]}" \
         --pull=newer \
         --tag "${target_image}:${tag}" \
         .
+
+# Build the dx-nvidia variant (based on bazzite-dx-nvidia:stable)
+[group('Build')]
+build-dx $target_image=(image_name + "-dx") $tag=default_tag:
+    just build "$target_image" "$tag" "Containerfile.dx"
 
 # Command: _rootful_load_image
 # Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.

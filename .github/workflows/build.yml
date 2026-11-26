@@ -17,30 +17,50 @@ env:
   IMAGE_DESC: "My Customized Universal Blue Image"
   IMAGE_KEYWORDS: "bootc,ublue,universal-blue"
   IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"  # Put your own image here for a fancy profile on https://artifacthub.io/!
-  IMAGE_NAME: "${{ github.event.repository.name }}"  # output image name, usually same as repo name
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
   DEFAULT_TAG: "latest"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ matrix.variant }}
   cancel-in-progress: true
 
 jobs:
-  check_update:
-    name: Check for upstream updates
+  build:
+    name: ${{ matrix.variant }}
     runs-on: ubuntu-24.04
-    outputs:
-      should_build: ${{ steps.compare.outputs.should_build }}
-      upstream_version: ${{ steps.compare.outputs.upstream_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: nvidia-open
+            image_suffix: ""
+            containerfile: Containerfile
+          - variant: dx-nvidia
+            image_suffix: "-dx"
+            containerfile: Containerfile.dx
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
     steps:
-      - name: Checkout repository
+      - name: Prepare environment
+        run: |
+          # Each variant gets its own image name: <repo-name> or <repo-name>-dx
+          IMAGE_NAME="${{ github.event.repository.name }}${{ matrix.image_suffix }}"
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
+
+      # These stage versions are pinned by https://github.com/renovatebot/renovate
+      - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Compare upstream tag with ours (via PowerShell)
         id: compare
         shell: pwsh
         env:
-          MY_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+          MY_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}${{ matrix.image_suffix }}
         run: |
           # 强制转换为全小写，兼容 GHCR 命名规范
           $myImageLower = $env:MY_IMAGE_NAME.ToLower()
@@ -51,33 +71,6 @@ jobs:
             -MyImage $myImageLower `
             -GithubActor "${{ github.actor }}" `
             -GithubToken "${{ secrets.GITHUB_TOKEN }}"
-
-
-  build_push:
-    name: Build and push image
-    runs-on: ubuntu-24.04
-
-    needs: check_update
-    if: ${{ needs.check_update.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}
-
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
-    env:
-      UPSTREAM_VERSION: ${{ needs.check_update.outputs.upstream_version }}
-
-    steps:
-      - name: Prepare environment
-        run: |
-          # Lowercase the image uri
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
-
-      # These stage versions are pinned by https://github.com/renovatebot/renovate
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # This is optional, but if you see that your builds are way too big for the runners, you can enable this by uncommenting the following lines:
       - name: Maximize build space
@@ -98,7 +91,7 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         id: metadata
         env:
-          UPSTREAM_VERSION: ${{ needs.check_update.outputs.upstream_version }}
+          UPSTREAM_VERSION: ${{ steps.compare.outputs.upstream_version }}
         with:
           # This generates all the tags for your image, you can add custom tags here too!
           # Default tags are "$DEFAULT_TAG" and "$DEFAULT_TAG.$date".
@@ -114,7 +107,7 @@ jobs:
             org.opencontainers.image.created=${{ steps.date.outputs.date }}
             org.opencontainers.image.description=${{ env.IMAGE_DESC }}
             org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
-            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
+            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/${{ matrix.containerfile }}
             org.opencontainers.image.title=${{ env.IMAGE_NAME }}
             org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
@@ -133,7 +126,7 @@ jobs:
         uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
         with:
           containerfiles: |
-            ./Containerfile
+            ./${{ matrix.containerfile }}
           # Postfix image name with -custom to make it a little more descriptive
           # Syntax: https://docs.github.com/en/actions/learn-github-actions/expressions#format
           image: ${{ env.IMAGE_NAME }}
