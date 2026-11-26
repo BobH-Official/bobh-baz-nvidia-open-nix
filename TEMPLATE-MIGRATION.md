@@ -1,0 +1,42 @@
+# Template migration test
+
+Upstream: https://github.com/ublue-os/image-template/commit/e9c642029d600611009b114aad17c0a1467c52ba
+
+This branch upgrades the template before adding the separate Virt variant.
+The official NVIDIA Open stable base, /nix ownership, public signing key,
+package identity and existing production deployment are unchanged.
+
+- No automatic build, PR build or schedule on this branch.
+- Manual container workflow builds locally on the runner, never pushes from
+  this branch (even if publish is checked). Disk workflow is master-only.
+- Rechunk is disabled by default, preserving the existing choice.
+- Production tag contract: latest, latest.YYYYMMDD, YYYYMMDD, upstream.VERSION.
+  Test tags are isolated; no test tags are published.
+- The PowerShell detector resolves the actual Containerfile base, retains
+  version detection with creation-date fallback, and compares base name,
+  version and digest against the matching published tag. Date+1 guesses
+  are removed. The build pins the inspected digest. Old images without
+  the new labels will be rebuilt once when automatic checks resume.
+- Manual runs always build. Before enabling production automation, restore
+  schedule/push triggers and make scheduled runs conditional on should_build;
+  pushes and explicit dispatch must not be skipped. Production publishing
+  must be reviewed separately before merging.
+- Cosign 3.1.4 uses the upstream legacy-bundle flags for rpm-ostree.
+- The existing cosign.pub and SIGNING_SECRET are reused; no new key.
+- No Virt RPMs, automatic services, VFIO or kernel argument changes yet.
+- The ISO workflow uses the existing KDE config rather than nonexistent
+  iso.toml; the ISO kickstart points to this repository instead of the demo.
+
+Local validation (Bazzite with just, pwsh, skopeo, podman):
+
+```bash
+just check
+bash -n build_files/build.sh
+pwsh -NoProfile -File .github/scripts/Check-UpstreamUpdate.ps1 -MyImage ghcr.io/bobh-official/bobh-baz-nvidia-open-nix
+just build bobh-baz-nvidia-open-nix template-test
+podman run --rm --entrypoint /usr/bin/stat bobh-baz-nvidia-open-nix:template-test -c '%u:%g' /nix
+```
+
+Local just build without exported metadata uses the floating Containerfile
+default; the manual workflow verifies the pinned base and metadata together.
+Do not merge until validation and the final production workflow are reviewed.

@@ -1,212 +1,138 @@
 ---
 name: Build container image
 on:
-  pull_request:
-    branches:
-      - master
-  schedule:
-    - cron: '05 10 * * *'  # 10:05am UTC everyday
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - '**/README.md'
   workflow_dispatch:
+    inputs:
+      rechunk:
+        description: Test rpm-ostree rechunk (requires additional disk space)
+        type: boolean
+        default: false
+      publish:
+        description: Publish signed production image (master only)
+        type: boolean
+        default: false
 
-env:
-  IMAGE_DESC: "My Customized Universal Blue Image"
-  IMAGE_KEYWORDS: "bootc,ublue,universal-blue"
-  IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"  # Put your own image here for a fancy profile on https://artifacthub.io/!
-  IMAGE_NAME: "${{ github.event.repository.name }}"  # output image name, usually same as repo name
-  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
-  DEFAULT_TAG: "latest"
-
+# Migration branch: no push, pull_request or schedule triggers.
+# Re-enable production triggers only after local and manual CI validation.
+permissions:
+  contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  check_update:
-    name: Check for upstream updates
-    runs-on: ubuntu-24.04
-    outputs:
-      should_build: ${{ steps.compare.outputs.should_build }}
-      upstream_version: ${{ steps.compare.outputs.upstream_version }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Compare upstream tag with ours (via PowerShell)
-        id: compare
-        shell: pwsh
-        env:
-          MY_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
-        run: |
-          # 强制转换为全小写，兼容 GHCR 命名规范
-          $myImageLower = $env:MY_IMAGE_NAME.ToLower()
-          
-          # 执行我们的 ps1 脚本，并注入参数
-          .github/scripts/Check-UpstreamUpdate.ps1 `
-            -UpstreamImage "ghcr.io/ublue-os/bazzite:latest" `
-            -MyImage $myImageLower `
-            -GithubActor "${{ github.actor }}" `
-            -GithubToken "${{ secrets.GITHUB_TOKEN }}"
-
-
   build_push:
-    name: Build and push image
-    runs-on: ubuntu-24.04
-
-    needs: check_update
-    if: ${{ needs.check_update.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}
-
+    name: Build and verify image
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
       id-token: write
-
-    env:
-      UPSTREAM_VERSION: ${{ needs.check_update.outputs.upstream_version }}
-
     steps:
-      - name: Prepare environment
-        run: |
-          # Lowercase the image uri
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
-
-      # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      # This is optional, but if you see that your builds are way too big for the runners, you can enable this by uncommenting the following lines:
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Maximize build space
         uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
-
-      - name: Get current date
-        id: date
+      - name: Install just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - name: Check Just syntax
+        run: just check
+      - name: Prepare image identity
+        shell: bash
         run: |
-          # This generates a timestamp like what is defined on the ArtifactHub documentation
-          # E.G: 2022-02-08T15:38:15Z'
-          # https://artifacthub.io/docs/topics/repositories/container-images/
-          # https://linux.die.net/man/1/date
-          echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
-
-      # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
-      # The metadata by itself is not going to do anything, you choose if you want your image to be on ArtifactHub or not.
-      - name: Image Metadata
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        id: metadata
+          set -euo pipefail
+          IMAGE_NAME="$(just image_name)"
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/heads/master ]]; then
+            echo "DEFAULT_TAG=latest" >> "$GITHUB_ENV"
+          else
+            echo "DEFAULT_TAG=template-test" >> "$GITHUB_ENV"
+          fi
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y skopeo
+          fi
+      - name: Resolve upstream version and digest
+        id: upstream
+        shell: pwsh
+        run: |
+          .github/scripts/Check-UpstreamUpdate.ps1 -MyImage "$env:IMAGE_REGISTRY/$env:IMAGE_NAME" -Channel latest
+      - name: Export immutable base and version
+        shell: bash
         env:
-          UPSTREAM_VERSION: ${{ needs.check_update.outputs.upstream_version }}
-        with:
-          # This generates all the tags for your image, you can add custom tags here too!
-          # Default tags are "$DEFAULT_TAG" and "$DEFAULT_TAG.$date".
-          tags: |
-            type=raw,value=${{ env.DEFAULT_TAG }}
-            type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-            type=raw,value={{date 'YYYYMMDD'}}
-            type=raw,value=upstream.${{ env.UPSTREAM_VERSION }},enable=${{ env.UPSTREAM_VERSION != '' }}
-            type=sha,enable=${{ github.event_name == 'pull_request' }}
-            type=ref,event=pr
-          labels: |
-            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
-            org.opencontainers.image.created=${{ steps.date.outputs.date }}
-            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
-            org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
-            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
-            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
-            org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
-            org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-            io.artifacthub.package.deprecated=false
-            io.artifacthub.package.keywords=${{ env.IMAGE_KEYWORDS }}
-            io.artifacthub.package.license=Apache-2.0
-            io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
-            io.artifacthub.package.prerelease=false
-            containers.bootc=1
-          sep-tags: " "
-          sep-annotations: " "
-
-      - name: Build Image
-        id: build_image
-        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
-        with:
-          containerfiles: |
-            ./Containerfile
-          # Postfix image name with -custom to make it a little more descriptive
-          # Syntax: https://docs.github.com/en/actions/learn-github-actions/expressions#format
-          image: ${{ env.IMAGE_NAME }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          oci: false
-
-      # Rechunk is a script that we use on Universal Blue to make sure there isnt a single huge layer when your image gets published.
-      # This does not make your image faster to download, just provides better resumability and fixes a few errors.
-      # Documentation for Rechunk is provided on their github repository at https://github.com/hhd-dev/rechunk
-      # You can enable it by uncommenting the following lines:
-      # - name: Run Rechunker
-      #   id: rechunk
-      #   uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
-      #   with:
-      #     rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
-      #     ref: "localhost/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     skip_compression: true
-      #     version: ${{ env.CENTOS_VERSION }}
-      #     labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
-
-      # # This is necessary so that the podman socket can find the rechunked image on its storage
-      # - name: Load in podman and tag
-      #   run: |
-      #     IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
-      #     sudo rm -rf ${{ steps.rechunk.outputs.output }}
-      #     for tag in ${{ steps.metadata.outputs.tags }}; do
-      #       podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
-      #     done
-
-      # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
-      # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+          BASE_REF: ${{ steps.upstream.outputs.base_image_ref }}
+          VERSION: ${{ steps.upstream.outputs.upstream_version }}
+          DIGEST: ${{ steps.upstream.outputs.upstream_digest }}
+          UPSTREAM: ${{ steps.upstream.outputs.upstream_image }}
+        run: |
+          {
+            echo "BASE_IMAGE_REF=$BASE_REF"
+            echo "UPSTREAM_VERSION=$VERSION"
+            echo "UPSTREAM_DIGEST=$DIGEST"
+            echo "UPSTREAM_IMAGE=$UPSTREAM"
+          } >> "$GITHUB_ENV"
+      - name: Build image (manual test always builds)
+        run: just build "$IMAGE_NAME" "$DEFAULT_TAG"
+      - name: Rechunk with rpm-ostree (opt-in)
+        if: inputs.rechunk
+        run: just ostree-rechunk "$IMAGE_NAME" "$DEFAULT_TAG"
+      - name: Verify image metadata and Nix directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$IMAGE_NAME:$DEFAULT_TAG"
+          podman inspect "$image" | jq -e --arg version "$UPSTREAM_VERSION" --arg digest "$UPSTREAM_DIGEST" --arg upstream "$UPSTREAM_IMAGE" '.[0].Config.Labels | ."io.bobh.upstream.version" == $version and ."org.opencontainers.image.base.digest" == $digest and ."org.opencontainers.image.base.name" == $upstream and ."containers.bootc" == "1"'
+          podman run --rm --entrypoint /usr/bin/stat "$image" -c '%u:%g' /nix | grep -Fx '30000:30000'
+      - name: Generate build tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          tags="$(just generate-build-tags "$IMAGE_NAME" "$DEFAULT_TAG")"
+          echo "aliases=$tags" >> "$GITHUB_OUTPUT"
+          printf 'Upstream: %s (%s)\nTags: %s\n' "$UPSTREAM_VERSION" "$UPSTREAM_DIGEST" "$tags" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Production aliases: %s\n' "$(just generate-build-tags "$IMAGE_NAME" latest)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Tag image
+        env:
+          ALIAS_TAGS: ${{ steps.tags.outputs.aliases }}
+        run: just tag-images "$IMAGE_NAME" "$DEFAULT_TAG" "$ALIAS_TAGS"
+      - name: Login to GHCR (production only)
+        if: github.ref == 'refs/heads/master' && inputs.publish
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push To GHCR
-        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      - name: Push production image
         id: push
+        if: github.ref == 'refs/heads/master' && inputs.publish
         env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ github.token }}
-        with:
-          registry: ${{ env.IMAGE_REGISTRY }}
-          image: ${{ env.IMAGE_NAME }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          username: ${{ env.REGISTRY_USER }}
-          password: ${{ env.REGISTRY_PASSWORD }}
-
-      # This section is optional and only needs to be enabled if you plan on distributing
-      # your project for others to consume. You will need to create a public and private key
-      # using Cosign and save the private key as a repository secret in Github for this workflow
-      # to consume. For more details, review the image signing section of the README.
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        with:
-          cosign-release: 'v2.6.1'
-
-      - name: Sign container image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+          ALIAS_TAGS: ${{ steps.tags.outputs.aliases }}
+        shell: bash
         run: |
-          IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
-          for tag in ${{ steps.metadata.outputs.tags }}; do
-            cosign sign -y --key env://COSIGN_PRIVATE_KEY $IMAGE_FULL:$tag
+          set -euo pipefail
+          digest=""
+          for tag in $ALIAS_TAGS; do
+            podman push --digestfile=/tmp/digestfile "$IMAGE_NAME:$tag" "$IMAGE_REGISTRY/$IMAGE_NAME:$tag"
+            current="$(cat /tmp/digestfile)"
+            [[ -z "$digest" || "$digest" == "$current" ]] || { echo "Unexpected digest mismatch"; exit 1; }
+            digest="$current"
           done
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Install Cosign
+        if: github.ref == 'refs/heads/master' && inputs.publish
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: 'v3.1.4'
+      - name: Sign and verify (legacy bundle for rpm-ostree)
+        if: github.ref == 'refs/heads/master' && inputs.publish
         env:
-          TAGS: ${{ steps.push.outputs.digest }}
-          COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$IMAGE_REGISTRY/$IMAGE_NAME@$DIGEST"
+          cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "$image"
+          cosign verify --key cosign.pub "$image"
