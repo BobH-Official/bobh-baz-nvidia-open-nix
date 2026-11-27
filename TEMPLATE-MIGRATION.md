@@ -6,7 +6,9 @@ This branch upgrades the template before adding the separate Virt variant.
 The official NVIDIA Open stable base, /nix ownership, public signing key,
 package identity and existing production deployment are unchanged.
 
-- No automatic build, PR build or schedule on this branch.
+- No automatic builds on the test branch. The candidate production workflow
+  restores master-only push and schedule triggers (effective after merging),
+  with no pull_request trigger.
 - Manual container workflow builds locally on the runner, never pushes from
   this branch (even if publish is checked). Disk workflow is master-only.
 - Rechunk is disabled by default, preserving the existing choice.
@@ -17,10 +19,15 @@ package identity and existing production deployment are unchanged.
   version and digest against the matching published tag. Date+1 guesses
   are removed. The build pins the inspected digest. Old images without
   the new labels will be rebuilt once when automatic checks resume.
-- Manual runs always build. Before enabling production automation, restore
-  schedule/push triggers and make scheduled runs conditional on should_build;
-  pushes and explicit dispatch must not be skipped. Production publishing
-  must be reviewed separately before merging.
+- Scheduled master builds skip when the upstream and channel aliases agree,
+  the base metadata matches and the source revision matches. Pushes and
+  manual runs always build. Production publishing is automatic on master
+  push/schedule, opt-in on master dispatch, and prohibited on other branches.
+- Production checks the signing key before pushing. It pushes the versioned
+  tag first, signs and verifies its digest, then promotes date aliases and
+  latest last. A partial release is detected on the next scheduled run.
+- Offline detector regression tests: `pwsh -NoProfile -File .github/scripts/Test-UpstreamUpdate.ps1`.
+- Do not merge until the user has reviewed and validated the new workflow.
 - Cosign 3.1.4 uses the upstream legacy-bundle flags for rpm-ostree.
 - The existing cosign.pub and SIGNING_SECRET are reused; no new key.
 - No Virt RPMs, automatic services, VFIO or kernel argument changes yet.
@@ -40,3 +47,7 @@ podman run --rm --entrypoint /usr/bin/stat bobh-baz-nvidia-open-nix:template-tes
 Local just build without exported metadata uses the floating Containerfile
 default; the manual workflow verifies the pinned base and metadata together.
 Do not merge until validation and the final production workflow are reviewed.
+
+Local image build at e5d7075 was verified on 2026-11-27: bootc lint 14 passed,
+1 skipped; Nix ownership 30000:30000, upstream metadata and both tag sets correct.
+The revised workflow, signing path and regression tests still require execution.

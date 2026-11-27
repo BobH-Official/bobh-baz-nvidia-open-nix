@@ -3,7 +3,8 @@ param (
     [string]$UpstreamImage,
     [Parameter(Mandatory)]
     [string]$MyImage,
-    [string]$Channel = 'latest'
+    [string]$Channel = 'latest',
+    [string]$ExpectedRevision
 )
 $ErrorActionPreference = 'Stop'
 
@@ -31,13 +32,21 @@ $prefix = if ($Channel -eq 'latest') { 'upstream.' } else { "$Channel.upstream."
 $target = "${MyImage}:$prefix$version"
 $shouldBuild = $true
 
-# A failed target lookup is never evidence of a matching build.
-$existingRaw = skopeo inspect --override-os linux --override-arch amd64 "docker://$target" 2>$null
+# Both aliases must refer to the same completed release. A failed lookup
+# or a partially promoted release must never cause a scheduled skip.
+$versionRaw = skopeo inspect --override-os linux --override-arch amd64 "docker://$target" 2>$null
 if ($LASTEXITCODE -eq 0) {
-    $existing = $existingRaw | ConvertFrom-Json
-    $shouldBuild = ($existing.Labels.'org.opencontainers.image.base.digest' -ne $digest) -or
-        ($existing.Labels.'org.opencontainers.image.base.name' -ne $UpstreamImage) -or
-        ($existing.Labels.'io.bobh.upstream.version' -ne $version)
+    $existing = $versionRaw | ConvertFrom-Json
+    $channelRaw = skopeo inspect --override-os linux --override-arch amd64 "docker://${MyImage}:$Channel" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $current = $channelRaw | ConvertFrom-Json
+        $shouldBuild = ($existing.Labels.'org.opencontainers.image.base.digest' -cne $digest) -or
+            ($existing.Labels.'org.opencontainers.image.base.name' -cne $UpstreamImage) -or
+            ($existing.Labels.'io.bobh.upstream.version' -cne $version) -or
+            (-not $existing.Digest) -or
+            ($current.Digest -cne $existing.Digest) -or
+            ($ExpectedRevision -and ($existing.Labels.'org.opencontainers.image.revision' -cne $ExpectedRevision))
+    }
 }
 
 $values = [ordered]@{
