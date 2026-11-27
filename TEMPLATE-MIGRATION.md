@@ -63,3 +63,11 @@ bash .github/scripts/Test-BuildTags.sh
 
 The new tests are offline; no images are built or published. The new hotfix
 cases still require execution.
+
+At b046a8c, all 12 detector cases and all 3 tag cases passed locally.
+GitHub Actions run 45961642783 also passed all 12 detector assertions, but the
+built-in pwsh shell propagated the final mocked native exit code 1. Explicit
+successful exit codes are now returned after the detector outputs and tests;
+regression assertions also check the detector's exit code. A missing image tag
+is a valid detection outcome, whereas upstream inspection errors still throw.
+The remote build has not yet run; dispatch the updated branch for validation.

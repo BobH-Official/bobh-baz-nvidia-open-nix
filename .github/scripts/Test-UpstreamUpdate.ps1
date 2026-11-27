@@ -36,6 +36,7 @@ function Assert-Case {
     try {
         $env:GITHUB_OUTPUT = $file.FullName
         & $detector -UpstreamImage $base -MyImage $my -ExpectedRevision $revision -Channel $Channel
+        if ($LASTEXITCODE -ne 0) { throw "FAIL: $Name (detector exit code $LASTEXITCODE)" }
         $out = Get-Content -LiteralPath $file.FullName
         if ($out -notcontains "should_build=$Expected" -or
             $out -notcontains "upstream_version=$ExpectedVersion" -or
@@ -80,3 +81,5 @@ $virtChannel = "docker://${my}:virt"
 Assert-Case 'matching virt hotfix skips rebuild independently' @{ $upRef = $up; $virtRef = $published; $virtChannel = $published } 'false' $hotfix 'virt'
 Assert-Case 'ordinary hotfix cannot satisfy virt channel' @{ $upRef = $up; $hotfixRef = $published; $latestRef = $published } 'true' $hotfix 'virt'
 Write-Host 'All twelve detector cases passed.'
+# Report success only after all assertions have passed.
+exit 0

@@ -7,6 +7,8 @@ param (
     [string]$ExpectedRevision
 )
 $ErrorActionPreference = 'Stop'
+# Handle native command failures explicitly: a missing published tag is expected.
+$PSNativeCommandUseErrorActionPreference = $false
 
 # Single source of truth: Containerfile's default BASE_IMAGE.
 if (-not $UpstreamImage) {
@@ -62,3 +64,7 @@ foreach ($entry in $values.GetEnumerator()) {
     Write-Host $line
     if ($env:GITHUB_OUTPUT) { Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value $line }
 }
+
+# A missing published tag is a successful detection result, not a script error.
+# GitHub Actions forwards LASTEXITCODE even after successful PowerShell cmdlets.
+exit 0
