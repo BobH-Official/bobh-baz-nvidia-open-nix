@@ -26,15 +26,19 @@ function skopeo {
 }
 
 function Assert-Case {
-    param([string]$Name, [hashtable]$MockData, [string]$Expected)
+    param(
+        [string]$Name, [hashtable]$MockData, [string]$Expected,
+        [string]$ExpectedVersion = $version, [string]$Channel = 'latest'
+    )
     $mock = $MockData
     $file = New-TemporaryFile
     $previous = $env:GITHUB_OUTPUT
     try {
         $env:GITHUB_OUTPUT = $file.FullName
-        & $detector -UpstreamImage $base -MyImage $my -ExpectedRevision $revision
+        & $detector -UpstreamImage $base -MyImage $my -ExpectedRevision $revision -Channel $Channel
         $out = Get-Content -LiteralPath $file.FullName
         if ($out -notcontains "should_build=$Expected" -or
+            $out -notcontains "upstream_version=$ExpectedVersion" -or
             $out -notcontains "upstream_digest=$upDigest" -or
             $out -notcontains "base_image_ref=$($up.Name)@$upDigest") {
             throw "FAIL: $Name"
@@ -60,5 +64,19 @@ $published.Labels.'org.opencontainers.image.revision' = 'f' * 40
 Assert-Case 'changed repository revision' @{ $upRef = $up; $versionRef = $published; $latestRef = $published } 'true'
 $published.Labels.'org.opencontainers.image.revision' = $revision
 $up.Labels.Remove('org.opencontainers.image.version')
-Assert-Case 'missing version label falls back to date' @{ $upRef = $up } 'true'
-Write-Host 'All seven detector cases passed.'
+Assert-Case 'missing version label falls back to date' @{ $upRef = $up } 'true' '20261125'
+
+# Versions are opaque strings, not decimals or dates. The full hotfix
+# suffix must be used for both registry lookups and output metadata.
+$hotfix = '45.20261125.1'
+$hotfixRef = "docker://${my}:upstream.$hotfix"
+$up.Labels.'org.opencontainers.image.version' = $hotfix
+Assert-Case 'hotfix is not skipped because base release exists' @{ $upRef = $up; $versionRef = $published; $latestRef = $published } 'true' $hotfix
+$published.Labels.'io.bobh.upstream.version' = $hotfix
+Assert-Case 'matching hotfix skips rebuild' @{ $upRef = $up; $hotfixRef = $published; $latestRef = $published } 'false' $hotfix
+Assert-Case 'hotfix alias missing but latest matches' @{ $upRef = $up; $latestRef = $published } 'true' $hotfix
+$virtRef = "docker://${my}:virt.upstream.$hotfix"
+$virtChannel = "docker://${my}:virt"
+Assert-Case 'matching virt hotfix skips rebuild independently' @{ $upRef = $up; $virtRef = $published; $virtChannel = $published } 'false' $hotfix 'virt'
+Assert-Case 'ordinary hotfix cannot satisfy virt channel' @{ $upRef = $up; $hotfixRef = $published; $latestRef = $published } 'true' $hotfix 'virt'
+Write-Host 'All twelve detector cases passed.'

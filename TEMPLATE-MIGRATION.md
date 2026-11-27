@@ -51,3 +51,15 @@ Do not merge until validation and the final production workflow are reviewed.
 Local image build at e5d7075 was verified on 2026-11-27: bootc lint 14 passed,
 1 skipped; Nix ownership 30000:30000, upstream metadata and both tag sets correct.
 The revised workflow, signing path and regression tests still require execution.
+
+The seven original offline detector cases passed on 2026-11-27 at 9dc942f.
+Hotfix regression coverage now asserts the full version string, version-specific
+registry aliases and independent virt channel checks. Run:
+
+```bash
+pwsh -NoProfile -File .github/scripts/Test-UpstreamUpdate.ps1
+bash .github/scripts/Test-BuildTags.sh
+```
+
+The new tests are offline; no images are built or published. The new hotfix
+cases still require execution.

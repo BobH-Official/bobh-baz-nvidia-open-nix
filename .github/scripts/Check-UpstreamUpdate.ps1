@@ -20,7 +20,8 @@ if ($Channel -notmatch '^[a-z0-9][a-z0-9._-]*$') { throw 'Invalid channel' }
 $raw = skopeo inspect --override-os linux --override-arch amd64 "docker://$UpstreamImage"
 if ($LASTEXITCODE -ne 0) { throw "Could not inspect upstream: $UpstreamImage" }
 $upstream = $raw | ConvertFrom-Json
-$version = $upstream.Labels.'org.opencontainers.image.version'
+# Preserve the complete version string, including hotfix suffixes (e.g. 45.20261125.1).
+$version = [string]$upstream.Labels.'org.opencontainers.image.version'
 if ([string]::IsNullOrWhiteSpace($version)) {
     $version = ([datetimeoffset]::Parse($upstream.Created)).UtcDateTime.ToString('yyyyMMdd')
 }
